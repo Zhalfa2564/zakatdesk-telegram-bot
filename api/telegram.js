@@ -1,38 +1,73 @@
-// NOTE: kita sengaja TIDAK import @vercel/kv di paling atas.
-// Biar GET /api/telegram nggak crash saat module init.
-// KV akan di-load hanya saat dibutuhkan (POST).
+// ZakatDesk Telegram Bot (Vercel) - Cara B: Upstash REST langsung (tanpa @vercel/kv)
 
-let kvClient = null;
-async function kv() {
-  if (kvClient) return kvClient;
-  const mod = await import("@vercel/kv");
-  kvClient = mod.kv;
-  return kvClient;
+// ===== Upstash REST helpers (pakai env Vercel KV) =====
+function kvBase() {
+  const base = (process.env.KV_REST_API_URL || "").trim();
+  if (!base) throw new Error("KV_REST_API_URL missing");
+  return base.replace(/\/+$/, "");
 }
 
-export default async function handler(req, res) {
-  // Health check (biar bisa dicek dari browser)
-  if (req.method === "GET") return res.status(200).send("ok");
+function kvToken() {
+  const token = (process.env.KV_REST_API_TOKEN || "").trim();
+  if (!token) throw new Error("KV_REST_API_TOKEN missing");
+  return token;
+}
 
+async function upstash(cmd, ...args) {
+  const path = [cmd, ...args.map(a => encodeURIComponent(String(a)))].join("/");
+  const url = `${kvBase()}/${path}`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${kvToken()}` } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`Upstash HTTP ${r.status}: ${JSON.stringify(j)}`);
+  if (j.error) throw new Error(`Upstash error: ${j.error}`);
+  return j.result;
+}
+
+async function kvGet(key) {
+  const res = await upstash("get", key);
+  return res ?? null;
+}
+
+async function kvSetEx(key, ttlSec, value) {
+  // SETEX key ttl value
+  await upstash("setex", key, ttlSec, value);
+}
+
+async function kvDel(key) {
+  await upstash("del", key);
+}
+
+// ===== Telegram handler =====
+export default async function handler(req, res) {
+  // health check
+  if (req.method === "GET") return res.status(200).send("ok");
   if (req.method !== "POST") return res.status(200).send("ok");
 
-  // verifikasi secret webhook Telegram
+  // verify secret token (anti orang iseng nembak endpoint)
   const secret = req.headers["x-telegram-bot-api-secret-token"] || "";
   if (process.env.WEBHOOK_SECRET && secret !== process.env.WEBHOOK_SECRET) {
     return res.status(401).send("unauthorized");
   }
 
-  const update = req.body;
+  // body kadang sudah object, kadang string (jarang), kita amanin
+  let update = req.body;
+  if (typeof update === "string") {
+    try { update = JSON.parse(update); } catch { update = {}; }
+  }
 
   try {
     if (update?.message) await handleMessage(update.message);
     if (update?.callback_query) await handleCallback(update.callback_query);
   } catch (e) {
     console.log("BOT_ERR:", String(e));
-    // tetap 200 biar Telegram nggak retry spam
+    // tetep 200 biar Telegram nggak retry spam
   }
 
   return res.status(200).send("ok");
+}
+
+function env(name) {
+  return (process.env[name] || "").trim();
 }
 
 function isAllowed(userId) {
@@ -42,19 +77,16 @@ function isAllowed(userId) {
   return set.has(String(userId));
 }
 
-// ===== Draft KV =====
+// ===== Draft store (Upstash) =====
 async function getDraft(userId) {
-  const k = await kv();
-  const raw = await k.get(`draft:${userId}`);
+  const raw = await kvGet(`draft:${userId}`);
   return raw ? JSON.parse(raw) : null;
 }
 async function setDraft(userId, draft) {
-  const k = await kv();
-  await k.set(`draft:${userId}`, JSON.stringify(draft), { ex: 1800 });
+  await kvSetEx(`draft:${userId}`, 1800, JSON.stringify(draft)); // TTL 30 menit
 }
 async function deleteDraft(userId) {
-  const k = await kv();
-  await k.del(`draft:${userId}`);
+  await kvDel(`draft:${userId}`);
 }
 
 function freshDraft(from) {
@@ -80,14 +112,20 @@ function freshDraft(from) {
 
 // ===== Telegram API =====
 async function tg(method, payload) {
-  const url = `https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/${method}`;
+  const token = env("TELEGRAM_TOKEN");
+  if (!token) throw new Error("TELEGRAM_TOKEN missing");
+
+  const url = `https://api.telegram.org/bot${token}/${method}`;
   const r = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
-  return r.json().catch(() => ({}));
+  const j = await r.json().catch(() => ({}));
+  if (!j.ok) console.log("TG_ERR:", j);
+  return j;
 }
+
 async function tgSend(chatId, text, opts = {}) {
   return tg("sendMessage", { chat_id: chatId, text, ...opts });
 }
@@ -215,7 +253,7 @@ function draftSummary(d) {
   ].join("\n");
 }
 
-// ===== Handlers =====
+// ===== Bot flows =====
 async function handleMessage(msg) {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
@@ -329,12 +367,17 @@ async function handleMessage(msg) {
       return;
     }
 
+    const appsUrl = env("APPS_SCRIPT_URL");
+    const appsKey = env("APPS_API_KEY");
+    if (!appsUrl) throw new Error("APPS_SCRIPT_URL missing");
+    if (!appsKey) throw new Error("APPS_API_KEY missing");
+
     const body = {
-      api_key: process.env.APPS_API_KEY,
+      api_key: appsKey,
       txid: draft.txid,
       nama: draft.nama,
       alamat: draft.alamat,
-      pembayaran: draft.pembayaran,
+      pembayaran: draft.pembayaran, // Uang / Beras (Ltr) / Beras (Kg)
       jiwa: draft.jiwa,
       maal: draft.maal || 0,
       fidyah: draft.fidyah || 0,
@@ -342,7 +385,7 @@ async function handleMessage(msg) {
       amil: draft.amil
     };
 
-    const r = await fetch(process.env.APPS_SCRIPT_URL, {
+    const r = await fetch(appsUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
