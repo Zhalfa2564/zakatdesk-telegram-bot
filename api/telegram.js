@@ -1,9 +1,22 @@
-import { kv } from "@vercel/kv";
+// NOTE: kita sengaja TIDAK import @vercel/kv di paling atas.
+// Biar GET /api/telegram nggak crash saat module init.
+// KV akan di-load hanya saat dibutuhkan (POST).
+
+let kvClient = null;
+async function kv() {
+  if (kvClient) return kvClient;
+  const mod = await import("@vercel/kv");
+  kvClient = mod.kv;
+  return kvClient;
+}
 
 export default async function handler(req, res) {
+  // Health check (biar bisa dicek dari browser)
+  if (req.method === "GET") return res.status(200).send("ok");
+
   if (req.method !== "POST") return res.status(200).send("ok");
 
-  // verifikasi secret dari Telegram (anti orang iseng)
+  // verifikasi secret webhook Telegram
   const secret = req.headers["x-telegram-bot-api-secret-token"] || "";
   if (process.env.WEBHOOK_SECRET && secret !== process.env.WEBHOOK_SECRET) {
     return res.status(401).send("unauthorized");
@@ -12,10 +25,11 @@ export default async function handler(req, res) {
   const update = req.body;
 
   try {
-    if (update.message) await handleMessage(update.message);
-    if (update.callback_query) await handleCallback(update.callback_query);
+    if (update?.message) await handleMessage(update.message);
+    if (update?.callback_query) await handleCallback(update.callback_query);
   } catch (e) {
-    console.log("ERR:", String(e));
+    console.log("BOT_ERR:", String(e));
+    // tetap 200 biar Telegram nggak retry spam
   }
 
   return res.status(200).send("ok");
@@ -30,14 +44,17 @@ function isAllowed(userId) {
 
 // ===== Draft KV =====
 async function getDraft(userId) {
-  const raw = await kv.get(`draft:${userId}`);
+  const k = await kv();
+  const raw = await k.get(`draft:${userId}`);
   return raw ? JSON.parse(raw) : null;
 }
 async function setDraft(userId, draft) {
-  await kv.set(`draft:${userId}`, JSON.stringify(draft), { ex: 1800 }); // 30 menit
+  const k = await kv();
+  await k.set(`draft:${userId}`, JSON.stringify(draft), { ex: 1800 });
 }
 async function deleteDraft(userId) {
-  await kv.del(`draft:${userId}`);
+  const k = await kv();
+  await k.del(`draft:${userId}`);
 }
 
 function freshDraft(from) {
@@ -61,7 +78,7 @@ function freshDraft(from) {
   };
 }
 
-// ===== Telegram helpers =====
+// ===== Telegram API =====
 async function tg(method, payload) {
   const url = `https://api.telegram.org/bot${process.env.TELEGRAM_TOKEN}/${method}`;
   const r = await fetch(url, {
@@ -164,7 +181,7 @@ function okCancelInline() {
   };
 }
 
-// ===== logic helpers =====
+// ===== Helpers =====
 function parseMoney(s) {
   const cleaned = String(s).replace(/[^\d]/g, "");
   if (!cleaned) return null;
@@ -198,7 +215,7 @@ function draftSummary(d) {
   ].join("\n");
 }
 
-// ===== handlers =====
+// ===== Handlers =====
 async function handleMessage(msg) {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
@@ -240,7 +257,6 @@ async function handleMessage(msg) {
     return;
   }
 
-  // state: nama
   if (draft.state === "WAIT_NAME") {
     draft.nama = textRaw;
     draft.state = "IDLE";
@@ -249,7 +265,6 @@ async function handleMessage(msg) {
     return;
   }
 
-  // state: nominal tambahan
   if (draft.state === "WAIT_ADD_AMOUNT") {
     const amount = parseMoney(textRaw);
     if (amount === null) {
@@ -319,7 +334,7 @@ async function handleMessage(msg) {
       txid: draft.txid,
       nama: draft.nama,
       alamat: draft.alamat,
-      pembayaran: draft.pembayaran, // Uang / Beras (Ltr) / Beras (Kg)
+      pembayaran: draft.pembayaran,
       jiwa: draft.jiwa,
       maal: draft.maal || 0,
       fidyah: draft.fidyah || 0,
