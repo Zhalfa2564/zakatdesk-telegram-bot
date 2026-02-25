@@ -1,8 +1,0 @@
-{
-  "name": "zakatdesk-telegram-bot",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@vercel/kv": "^2.0.0"
-  }
-}
