@@ -1,7 +1,12 @@
-// ZakatDesk Telegram Bot (Vercel) - Upstash REST langsung (tanpa @vercel/kv)
-// Versi: Santai + Emoji + Rapi (HTML parse mode)
+// Assistant Zakat AL-Hikam (Telegram Bot) - Vercel + Upstash REST
+// Update:
+// - Nomor rumah 1–60 (paging otomatis)
+// - Edit dari mana saja (tanpa ulang dari awal)
+// - Ringkasan punya tombol OK / Edit / Batal
+// - Edit tambahan bisa set/clear Maal/Fidyah/Infak
+// - HTML parse mode (teks rapi + santai)
 
-// ===== Upstash REST helpers (pakai env Vercel KV) =====
+// ===================== Upstash REST (Vercel KV env) =====================
 function kvBase() {
   const base = (process.env.KV_REST_API_URL || "").trim();
   if (!base) throw new Error("KV_REST_API_URL missing");
@@ -28,29 +33,24 @@ async function kvGet(key) {
   const res = await upstash("get", key);
   return res ?? null;
 }
-
 async function kvSetEx(key, ttlSec, value) {
-  // SETEX key ttl value
-  await upstash("setex", key, ttlSec, value);
+  await upstash("setex", key, ttlSec, value); // SETEX key ttl value
 }
-
 async function kvDel(key) {
   await upstash("del", key);
 }
 
-// ===== Telegram handler =====
+// ===================== Telegram handler =====================
 export default async function handler(req, res) {
-  // health check
   if (req.method === "GET") return res.status(200).send("ok");
   if (req.method !== "POST") return res.status(200).send("ok");
 
-  // verify secret token (anti orang iseng nembak endpoint)
+  // verify secret token (anti orang iseng)
   const secret = req.headers["x-telegram-bot-api-secret-token"] || "";
   if (process.env.WEBHOOK_SECRET && secret !== process.env.WEBHOOK_SECRET) {
     return res.status(401).send("unauthorized");
   }
 
-  // body kadang sudah object, kadang string (jarang), kita amanin
   let update = req.body;
   if (typeof update === "string") {
     try { update = JSON.parse(update); } catch { update = {}; }
@@ -61,7 +61,6 @@ export default async function handler(req, res) {
     if (update?.callback_query) await handleCallback(update.callback_query);
   } catch (e) {
     console.log("BOT_ERR:", String(e));
-    // tetep 200 biar Telegram nggak retry spam
   }
 
   return res.status(200).send("ok");
@@ -78,13 +77,13 @@ function isAllowed(userId) {
   return set.has(String(userId));
 }
 
-// ===== Draft store (Upstash) =====
+// ===================== Draft store (Upstash) =====================
 async function getDraft(userId) {
   const raw = await kvGet(`draft:${userId}`);
   return raw ? JSON.parse(raw) : null;
 }
 async function setDraft(userId, draft) {
-  await kvSetEx(`draft:${userId}`, 1800, JSON.stringify(draft)); // TTL 30 menit
+  await kvSetEx(`draft:${userId}`, 1800, JSON.stringify(draft)); // 30 menit
 }
 async function deleteDraft(userId) {
   await kvDel(`draft:${userId}`);
@@ -103,7 +102,7 @@ function freshDraft(from) {
     infak: 0,
     amil: uname,
     state: "IDLE",
-    pendingAdd: "",
+    pendingAdd: "",     // MAAL/FIDYAH/INFAK
     blok: "",
     nomorBlok: 0,
     nomorRumah: 0,
@@ -111,7 +110,7 @@ function freshDraft(from) {
   };
 }
 
-// ===== Telegram API =====
+// ===================== Telegram API (HTML) =====================
 async function tg(method, payload) {
   const token = env("TELEGRAM_TOKEN");
   if (!token) throw new Error("TELEGRAM_TOKEN missing");
@@ -127,7 +126,7 @@ async function tg(method, payload) {
   return j;
 }
 
-// escape HTML untuk input user biar aman
+// escape HTML untuk input user
 function h(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
@@ -157,18 +156,16 @@ async function tgEdit(chatId, messageId, html, opts = {}) {
 }
 
 async function tgAck(cbId, text) {
-  // callback query text jangan HTML (cukup plain)
   return tg("answerCallbackQuery", { callback_query_id: cbId, text, show_alert: false });
 }
 
-// ===== Keyboards =====
+// ===================== Keyboards =====================
 function mainMenuKeyboard() {
-  // ini reply keyboard → biarin polos biar mapping aman
   return {
     keyboard: [
       ["Nama", "Alamat", "Pembayaran"],
       ["Jiwa", "Tambahan", "Lihat"],
-      ["OK", "Cancel"]
+      ["Edit", "OK", "Cancel"]
     ],
     resize_keyboard: true
   };
@@ -191,10 +188,14 @@ function nomorBlokKeyboard() {
   return { inline_keyboard: rows };
 }
 
+// ====== Nomor rumah 1–60 ======
+const TOTAL_RUMAH = 60;
+const RUMAH_PER_PAGE = 10;
+const RUMAH_PAGES = Math.ceil(TOTAL_RUMAH / RUMAH_PER_PAGE);
+
 function rumahKeyboard(page) {
-  const perPage = 10;
-  const start = (page - 1) * perPage + 1;
-  const end = Math.min(start + perPage - 1, 50);
+  const start = (page - 1) * RUMAH_PER_PAGE + 1;
+  const end = Math.min(start + RUMAH_PER_PAGE - 1, TOTAL_RUMAH);
 
   const rows = [];
   let row = [];
@@ -206,7 +207,7 @@ function rumahKeyboard(page) {
 
   const nav = [];
   if (page > 1) nav.push({ text: "⬅ Prev", callback_data: `nrp:${page - 1}` });
-  if (page < 5) nav.push({ text: "Next ➡", callback_data: `nrp:${page + 1}` });
+  if (page < RUMAH_PAGES) nav.push({ text: "Next ➡", callback_data: `nrp:${page + 1}` });
   if (nav.length) rows.push(nav);
 
   return { inline_keyboard: rows };
@@ -247,17 +248,45 @@ function okCancelInline() {
   return {
     inline_keyboard: [[
       { text: "✅ OK Simpan", callback_data: "do:ok" },
+      { text: "✏️ Edit", callback_data: "do:edit" },
       { text: "❌ Batal", callback_data: "do:cancel" }
     ]]
   };
 }
 
-// ===== Helpers =====
+function editMenuInline() {
+  return {
+    inline_keyboard: [
+      [{ text: "✍️ Nama", callback_data: "edit:nama" }, { text: "📍 Alamat", callback_data: "edit:alamat" }],
+      [{ text: "💳 Pembayaran", callback_data: "edit:pay" }, { text: "👨‍👩‍👧‍👦 Jiwa", callback_data: "edit:jiwa" }],
+      [{ text: "➕ Tambahan", callback_data: "edit:tambahan" }],
+      [{ text: "⬅️ Kembali ke Ringkasan", callback_data: "edit:back" }]
+    ]
+  };
+}
+
+function editTambahanInline() {
+  return {
+    inline_keyboard: [
+      [{ text: "💰 Set Maal", callback_data: "edit:set:MAAL" }, { text: "🧾 Set Fidyah", callback_data: "edit:set:FIDYAH" }],
+      [{ text: "🎁 Set Infak", callback_data: "edit:set:INFAK" }],
+      [{ text: "🧹 Hapus Maal", callback_data: "edit:clear:MAAL" }, { text: "🧹 Hapus Fidyah", callback_data: "edit:clear:FIDYAH" }],
+      [{ text: "🧹 Hapus Infak", callback_data: "edit:clear:INFAK" }],
+      [{ text: "⬅️ Kembali", callback_data: "edit:menu" }]
+    ]
+  };
+}
+
+// ===================== Helpers =====================
 function parseMoney(s) {
   const cleaned = String(s).replace(/[^\d]/g, "");
   if (!cleaned) return null;
   const n = parseInt(cleaned, 10);
   return Number.isFinite(n) ? n : null;
+}
+
+function rupiah(n) {
+  return Number(n || 0).toLocaleString("id-ID");
 }
 
 function missingFields(d) {
@@ -269,8 +298,8 @@ function missingFields(d) {
   return miss;
 }
 
-function rupiah(n) {
-  return Number(n || 0).toLocaleString("id-ID");
+function labelTambah(code) {
+  return code === "MAAL" ? "Maal" : code === "FIDYAH" ? "Fidyah" : "Infak";
 }
 
 function shortTx(txid) {
@@ -278,15 +307,11 @@ function shortTx(txid) {
   return s.length > 14 ? s.slice(0, 14) + "…" : s;
 }
 
-function labelTambah(code) {
-  return code === "MAAL" ? "Maal" : code === "FIDYAH" ? "Fidyah" : "Infak";
-}
-
-// ===== Text pack (Santai + Rapi) =====
+// ===================== Text pack (santai + rapi) =====================
 const TXT = {
   start: () =>
     `👋 <b>Assistant Zakat AL-Hikam</b>\n` +
-    `Aku bantu input zakat biar kamu nggak pegal jadi admin Excel 😄\n\n` +
+    `Aku bantu input zakat biar kamu nggak jadi admin Excel dadakan 😄\n\n` +
     `Mulai transaksi: <code>/input</code>\n` +
     `Cek draft: <code>/lihat</code>`,
 
@@ -312,13 +337,13 @@ const TXT = {
   askNomorBlok: (blok) =>
     `📍 <b>Alamat</b>\n` +
     `Blok: <b>${h(blok)}</b>\n` +
-    `Sekarang pilih <b>nomor blok</b> (1–24):`,
+    `Pilih <b>nomor blok</b> (1–24):`,
 
   askRumah: (blok, nomorBlok) =>
     `📍 <b>Alamat</b>\n` +
     `Blok: <b>${h(blok)}</b>\n` +
     `No Blok: <b>${h(nomorBlok)}</b>\n` +
-    `Sekarang pilih <b>nomor rumah</b> (1–50):`,
+    `Pilih <b>nomor rumah</b> (1–${TOTAL_RUMAH}):`,
 
   alamatSaved: (alamat) =>
     `📍 <b>Alamat tersimpan</b>\n` +
@@ -351,7 +376,8 @@ const TXT = {
   askNominalTambah: (label) =>
     `➕ <b>${h(label)}</b>\n` +
     `Ketik nominal (angka aja).\n` +
-    `Contoh: <code>25000</code>`,
+    `Contoh: <code>25000</code>\n\n` +
+    `Kalau salah klik: <code>/edit</code>`,
 
   tambahSaved: (label, amount) =>
     `✅ <b>${h(label)} tersimpan</b>\n` +
@@ -362,6 +388,7 @@ const TXT = {
     const miss = missingFields(d);
     return (
       `🧾 <b>Ringkasan Draft</b>\n` +
+      `TxID: <code>${h(shortTx(d.txid))}</code>\n` +
       `Nama: <b>${h(d.nama || "-")}</b>\n` +
       `Alamat: <code>${h(d.alamat || "-")}</code>\n` +
       `Pembayaran: <b>${h(d.pembayaran || "-")}</b>\n` +
@@ -371,8 +398,8 @@ const TXT = {
       `🎁 Infak: <b>Rp ${rupiah(d.infak || 0)}</b>\n` +
       `👤 Amil: <i>${h(d.amil || "-")}</i>\n\n` +
       (miss.length
-        ? `⚠️ Status: <b>BELUM LENGKAP</b>\nKurang: <b>${h(miss.join(", "))}</b>`
-        : `✅ Status: <b>SIAP DISIMPAN</b>`)
+        ? `⚠️ Status: <b>BELUM LENGKAP</b>\nKurang: <b>${h(miss.join(", "))}</b>\n\nKlik <b>Edit</b> kalau mau benerin.`
+        : `✅ Status: <b>SIAP DISIMPAN</b>\nKalau ada yang salah, klik <b>Edit</b> dulu ya 😄`)
     );
   },
 
@@ -391,8 +418,7 @@ const TXT = {
     `Kalau mau mulai lagi: <code>/input</code>`,
 
   noDraft: () =>
-    `😄 Draft kamu belum ada.\n` +
-    `Mulai dulu ya: <code>/input</code>`,
+    `😄 Draft kamu belum ada.\nMulai dulu ya: <code>/input</code>`,
 
   unknown: () =>
     `🤖 Aku agak bingung itu maksudnya apa 😄\n` +
@@ -400,7 +426,7 @@ const TXT = {
     `Cek draft: <code>/lihat</code>`
 };
 
-// ===== Bot flows =====
+// ===================== Core flow =====================
 async function handleMessage(msg) {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
@@ -413,7 +439,7 @@ async function handleMessage(msg) {
   const textRaw = (msg.text || "").trim();
   const normalized = textRaw.toLowerCase();
 
-  // mapping dari reply keyboard ke command
+  // mapping reply keyboard → command
   const text =
     normalized === "nama" ? "/nama" :
     normalized === "alamat" ? "/alamat" :
@@ -421,85 +447,34 @@ async function handleMessage(msg) {
     normalized === "jiwa" ? "/jiwa" :
     normalized === "tambahan" ? "/tambahan" :
     normalized === "lihat" ? "/lihat" :
+    normalized === "edit" ? "/edit" :
     normalized === "ok" ? "/ok" :
     normalized === "cancel" ? "/cancel" :
     textRaw;
 
-  let draft = await getDraft(userId);
-
+  // tanpa draft: /start & /input dulu
   if (text === "/start") {
     await tgSend(chatId, TXT.start(), { reply_markup: mainMenuKeyboard() });
     return;
   }
 
   if (text === "/input") {
-    draft = freshDraft(msg.from);
+    const draft = freshDraft(msg.from);
     await setDraft(userId, draft);
     await tgSend(chatId, TXT.draftCreated(draft), { reply_markup: mainMenuKeyboard() });
     return;
   }
 
+  // ambil draft
+  let draft = await getDraft(userId);
   if (!draft) {
     await tgSend(chatId, TXT.noDraft(), { reply_markup: mainMenuKeyboard() });
     return;
   }
 
-  if (draft.state === "WAIT_NAME") {
-    draft.nama = textRaw;
-    draft.state = "IDLE";
-    await setDraft(userId, draft);
-    await tgSend(chatId, TXT.nameSaved(draft.nama), { reply_markup: mainMenuKeyboard() });
-    return;
-  }
-
-  if (draft.state === "WAIT_ADD_AMOUNT") {
-    const amount = parseMoney(textRaw);
-    if (amount === null) {
-      await tgSend(chatId, `⚠️ <b>Nominal harus angka</b>\nContoh: <code>25000</code>`);
-      return;
-    }
-
-    const pending = draft.pendingAdd;
-    const label = labelTambah(pending);
-
-    if (pending === "MAAL") draft.maal = amount;
-    if (pending === "FIDYAH") draft.fidyah = amount;
-    if (pending === "INFAK") draft.infak = amount;
-
-    draft.pendingAdd = "";
-    draft.state = "IDLE";
-    await setDraft(userId, draft);
-
-    await tgSend(chatId, TXT.tambahSaved(label, amount), { reply_markup: mainMenuKeyboard() });
-    return;
-  }
-
-  if (text === "/nama") {
-    draft.state = "WAIT_NAME";
-    await setDraft(userId, draft);
-    await tgSend(chatId, TXT.askName(), { reply_markup: mainMenuKeyboard() });
-    return;
-  }
-
-  if (text === "/alamat") {
-    draft.rumahPage = 1;
-    await setDraft(userId, draft);
-    await tgSend(chatId, TXT.askBlok(), { reply_markup: blokKeyboard() });
-    return;
-  }
-
-  if (text === "/pembayaran") {
-    await tgSend(chatId, TXT.askPay(), { reply_markup: pembayaranKeyboard() });
-    return;
-  }
-
-  if (text === "/jiwa") {
-    await tgSend(chatId, TXT.askJiwa(), { reply_markup: jiwaKeyboard() });
-    return;
-  }
-
-  if (text === "/tambahan") {
-    await tgSend(chatId, TXT.askTambah(), { reply_markup: tambahanKeyboard() });
+  // ===== PRIORITAS COMMAND (jalan di state apa pun) =====
+  if (text === "/edit") {
+    await tgSend(chatId, "✏️ <b>Edit Draft</b>\nPilih bagian yang mau dibenerin:", { reply_markup: editMenuInline() });
     return;
   }
 
@@ -511,6 +486,49 @@ async function handleMessage(msg) {
   if (text === "/cancel") {
     await deleteDraft(userId);
     await tgSend(chatId, TXT.canceled(), { reply_markup: mainMenuKeyboard() });
+    return;
+  }
+
+  if (text === "/nama") {
+    draft.state = "WAIT_NAME";
+    await setDraft(userId, draft);
+    await tgSend(chatId, TXT.askName(), { reply_markup: mainMenuKeyboard() });
+    return;
+  }
+
+  if (text === "/alamat") {
+    draft.blok = "";
+    draft.nomorBlok = 0;
+    draft.nomorRumah = 0;
+    draft.alamat = "";
+    draft.rumahPage = 1;
+    draft.state = "IDLE";
+    await setDraft(userId, draft);
+    await tgSend(chatId, TXT.askBlok(), { reply_markup: blokKeyboard() });
+    return;
+  }
+
+  if (text === "/pembayaran") {
+    draft.pembayaran = "";
+    draft.state = "IDLE";
+    await setDraft(userId, draft);
+    await tgSend(chatId, TXT.askPay(), { reply_markup: pembayaranKeyboard() });
+    return;
+  }
+
+  if (text === "/jiwa") {
+    draft.jiwa = 0;
+    draft.state = "IDLE";
+    await setDraft(userId, draft);
+    await tgSend(chatId, TXT.askJiwa(), { reply_markup: jiwaKeyboard() });
+    return;
+  }
+
+  if (text === "/tambahan") {
+    draft.pendingAdd = "";
+    draft.state = "IDLE";
+    await setDraft(userId, draft);
+    await tgSend(chatId, TXT.askTambah(), { reply_markup: tambahanKeyboard() });
     return;
   }
 
@@ -558,6 +576,37 @@ async function handleMessage(msg) {
     return;
   }
 
+  // ===== INPUT FREE-TEXT (hanya kalau bukan command) =====
+  if (draft.state === "WAIT_NAME") {
+    draft.nama = textRaw;
+    draft.state = "IDLE";
+    await setDraft(userId, draft);
+    await tgSend(chatId, TXT.nameSaved(draft.nama), { reply_markup: mainMenuKeyboard() });
+    return;
+  }
+
+  if (draft.state === "WAIT_ADD_AMOUNT") {
+    const amount = parseMoney(textRaw);
+    if (amount === null) {
+      await tgSend(chatId, `⚠️ <b>Nominal harus angka</b>\nContoh: <code>25000</code>\n\nKalau salah jenis, klik <b>Edit</b> atau <code>/edit</code>.`, { reply_markup: mainMenuKeyboard() });
+      return;
+    }
+
+    const code = draft.pendingAdd;
+    const label = labelTambah(code);
+
+    if (code === "MAAL") draft.maal = amount;
+    if (code === "FIDYAH") draft.fidyah = amount;
+    if (code === "INFAK") draft.infak = amount;
+
+    draft.pendingAdd = "";
+    draft.state = "IDLE";
+    await setDraft(userId, draft);
+
+    await tgSend(chatId, TXT.tambahSaved(label, amount), { reply_markup: mainMenuKeyboard() });
+    return;
+  }
+
   await tgSend(chatId, TXT.unknown(), { reply_markup: mainMenuKeyboard() });
 }
 
@@ -572,24 +621,114 @@ async function handleCallback(cb) {
 
   const data = cb.data || "";
   let draft = await getDraft(userId);
-
   if (!draft) {
     await tgAck(cb.id, "Draft kosong. /input dulu.");
     return;
   }
 
+  // ===== OK / CANCEL / EDIT dari ringkasan =====
   if (data === "do:ok") {
     await tgAck(cb.id, "Sip ✅");
     await handleMessage({ chat: { id: chatId }, from: cb.from, text: "/ok" });
     return;
   }
+
   if (data === "do:cancel") {
     await tgAck(cb.id, "Dibatalkan ❌");
     await handleMessage({ chat: { id: chatId }, from: cb.from, text: "/cancel" });
     return;
   }
 
-  // alamat flow
+  if (data === "do:edit") {
+    await tgAck(cb.id, "Edit ✏️");
+    await tgSend(chatId, "✏️ <b>Edit Draft</b>\nPilih bagian yang mau dibenerin:", { reply_markup: editMenuInline() });
+    return;
+  }
+
+  // ===== Edit menu navigation =====
+  if (data === "edit:back") {
+    await tgAck(cb.id, "Balik");
+    await tgSend(chatId, TXT.summary(draft), { reply_markup: okCancelInline() });
+    return;
+  }
+
+  if (data === "edit:menu") {
+    await tgAck(cb.id, "Menu");
+    await tgSend(chatId, "✏️ <b>Edit Draft</b>\nPilih bagian yang mau dibenerin:", { reply_markup: editMenuInline() });
+    return;
+  }
+
+  if (data === "edit:nama") {
+    draft.state = "WAIT_NAME";
+    await setDraft(userId, draft);
+    await tgAck(cb.id, "Nama");
+    await tgSend(chatId, TXT.askName(), { reply_markup: mainMenuKeyboard() });
+    return;
+  }
+
+  if (data === "edit:alamat") {
+    draft.blok = "";
+    draft.nomorBlok = 0;
+    draft.nomorRumah = 0;
+    draft.alamat = "";
+    draft.rumahPage = 1;
+    draft.state = "IDLE";
+    await setDraft(userId, draft);
+    await tgAck(cb.id, "Alamat");
+    await tgSend(chatId, TXT.askBlok(), { reply_markup: blokKeyboard() });
+    return;
+  }
+
+  if (data === "edit:pay") {
+    draft.pembayaran = "";
+    draft.state = "IDLE";
+    await setDraft(userId, draft);
+    await tgAck(cb.id, "Pembayaran");
+    await tgSend(chatId, TXT.askPay(), { reply_markup: pembayaranKeyboard() });
+    return;
+  }
+
+  if (data === "edit:jiwa") {
+    draft.jiwa = 0;
+    draft.state = "IDLE";
+    await setDraft(userId, draft);
+    await tgAck(cb.id, "Jiwa");
+    await tgSend(chatId, TXT.askJiwa(), { reply_markup: jiwaKeyboard() });
+    return;
+  }
+
+  if (data === "edit:tambahan") {
+    draft.state = "IDLE";
+    draft.pendingAdd = "";
+    await setDraft(userId, draft);
+    await tgAck(cb.id, "Tambahan");
+    await tgSend(chatId, "➕ <b>Edit Tambahan</b>\nMau ubah yang mana?", { reply_markup: editTambahanInline() });
+    return;
+  }
+
+  if (data.startsWith("edit:clear:")) {
+    const code = data.split(":")[2]; // MAAL/FIDYAH/INFAK
+    if (code === "MAAL") draft.maal = 0;
+    if (code === "FIDYAH") draft.fidyah = 0;
+    if (code === "INFAK") draft.infak = 0;
+    await setDraft(userId, draft);
+    await tgAck(cb.id, "Dihapus 🧹");
+    await tgSend(chatId, "🧹 <b>Oke, sudah dihapus</b>\nCek ringkasan: <code>/lihat</code>", { reply_markup: mainMenuKeyboard() });
+    return;
+  }
+
+  if (data.startsWith("edit:set:")) {
+    const code = data.split(":")[2]; // MAAL/FIDYAH/INFAK
+    draft.pendingAdd = code;
+    draft.state = "WAIT_ADD_AMOUNT";
+    await setDraft(userId, draft);
+    await tgAck(cb.id, "Set ✅");
+    const label = labelTambah(code);
+    await tgSend(chatId, TXT.askNominalTambah(label), { reply_markup: mainMenuKeyboard() });
+    return;
+  }
+
+  // ===== alamat flow =====
   if (data.startsWith("blk:")) {
     draft.blok = data.split(":")[1];
     await setDraft(userId, draft);
@@ -624,7 +763,7 @@ async function handleCallback(cb) {
     return;
   }
 
-  // pembayaran
+  // ===== pembayaran =====
   if (data.startsWith("pay:")) {
     const code = data.split(":")[1];
     draft.pembayaran =
@@ -637,7 +776,7 @@ async function handleCallback(cb) {
     return;
   }
 
-  // jiwa
+  // ===== jiwa =====
   if (data.startsWith("jw:")) {
     draft.jiwa = parseInt(data.split(":")[1], 10);
     await setDraft(userId, draft);
@@ -646,12 +785,11 @@ async function handleCallback(cb) {
     return;
   }
 
-  // tambahan
+  // ===== tambahan =====
   if (data.startsWith("add:")) {
     draft.pendingAdd = data.split(":")[1];
     draft.state = "WAIT_ADD_AMOUNT";
     await setDraft(userId, draft);
-
     const label = labelTambah(draft.pendingAdd);
     await tgAck(cb.id, label);
     await tgSend(chatId, TXT.askNominalTambah(label), { reply_markup: mainMenuKeyboard() });
