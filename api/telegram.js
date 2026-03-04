@@ -5,6 +5,7 @@
 // - Ringkasan punya tombol OK / Edit / Batal
 // - Edit tambahan bisa set/clear Maal/Fidyah/Infak
 // - HTML parse mode (teks rapi + santai)
+// - Tambahan input Nomor WA untuk integrasi Gateway
 
 // ===================== Upstash REST (Vercel KV env) =====================
 function kvBase() {
@@ -95,6 +96,7 @@ function freshDraft(from) {
     txid: `TX-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     nama: "",
     alamat: "",
+    nomorWa: "", // <-- Tambahan Nomor WA
     pembayaran: "",
     jiwa: 0,
     maal: 0,
@@ -102,7 +104,7 @@ function freshDraft(from) {
     infak: 0,
     amil: uname,
     state: "IDLE",
-    pendingAdd: "",     // MAAL/FIDYAH/INFAK
+    pendingAdd: "",      // MAAL/FIDYAH/INFAK
     blok: "",
     nomorBlok: 0,
     nomorRumah: 0,
@@ -126,7 +128,6 @@ async function tg(method, payload) {
   return j;
 }
 
-// escape HTML untuk input user
 function h(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
@@ -163,9 +164,10 @@ async function tgAck(cbId, text) {
 function mainMenuKeyboard() {
   return {
     keyboard: [
-      ["Nama", "Alamat", "Pembayaran"],
-      ["Jiwa", "Tambahan", "Lihat"],
-      ["Edit", "OK", "Cancel"]
+      ["Nama", "Alamat", "Nomor WA"],
+      ["Pembayaran", "Jiwa", "Tambahan"],
+      ["Lihat", "Edit", "OK"], 
+      ["Cancel"]
     ],
     resize_keyboard: true
   };
@@ -188,7 +190,6 @@ function nomorBlokKeyboard() {
   return { inline_keyboard: rows };
 }
 
-// ====== Nomor rumah 1–60 ======
 const TOTAL_RUMAH = 60;
 const RUMAH_PER_PAGE = 10;
 const RUMAH_PAGES = Math.ceil(TOTAL_RUMAH / RUMAH_PER_PAGE);
@@ -258,8 +259,8 @@ function editMenuInline() {
   return {
     inline_keyboard: [
       [{ text: "✍️ Nama", callback_data: "edit:nama" }, { text: "📍 Alamat", callback_data: "edit:alamat" }],
-      [{ text: "💳 Pembayaran", callback_data: "edit:pay" }, { text: "👨‍👩‍👧‍👦 Jiwa", callback_data: "edit:jiwa" }],
-      [{ text: "➕ Tambahan", callback_data: "edit:tambahan" }],
+      [{ text: "📱 Nomor WA", callback_data: "edit:wa" }, { text: "💳 Pembayaran", callback_data: "edit:pay" }],
+      [{ text: "👨‍👩‍👧‍👦 Jiwa", callback_data: "edit:jiwa" }, { text: "➕ Tambahan", callback_data: "edit:tambahan" }],
       [{ text: "⬅️ Kembali ke Ringkasan", callback_data: "edit:back" }]
     ]
   };
@@ -293,6 +294,7 @@ function missingFields(d) {
   const miss = [];
   if (!d.nama) miss.push("Nama");
   if (!d.alamat) miss.push("Alamat");
+  if (!d.nomorWa) miss.push("Nomor WA"); // Diwajibkan agar tidak lupa
   if (!d.pembayaran) miss.push("Pembayaran");
   if (!d.jiwa) miss.push("Jiwa");
   return miss;
@@ -307,7 +309,7 @@ function shortTx(txid) {
   return s.length > 14 ? s.slice(0, 14) + "…" : s;
 }
 
-// ===================== Text pack (santai + rapi) =====================
+// ===================== Text pack =====================
 const TXT = {
   start: () =>
     `👋 <b>Assistant Zakat AL-Hikam</b>\n` +
@@ -348,6 +350,17 @@ const TXT = {
   alamatSaved: (alamat) =>
     `📍 <b>Alamat tersimpan</b>\n` +
     `Alamat: <code>${h(alamat)}</code>\n\n` +
+    `Lanjut isi WA: <code>/wa</code>`,
+
+  askWa: () =>
+    `📱 <b>Nomor WA Muzaki</b>\n` +
+    `Ketik nomor WA diawali angka 0 atau 62.\n` +
+    `Ketik tanda strip "<b>-</b>" kalau dia nggak punya WA.\n` +
+    `Contoh: <i>08123456789</i>`,
+
+  waSaved: (wa) =>
+    `✅ <b>WA tersimpan</b>\n` +
+    `Nomor: <b>${h(wa)}</b>\n\n` +
     `Lanjut pembayaran: <code>/pembayaran</code>`,
 
   askPay: () =>
@@ -391,6 +404,7 @@ const TXT = {
       `TxID: <code>${h(shortTx(d.txid))}</code>\n` +
       `Nama: <b>${h(d.nama || "-")}</b>\n` +
       `Alamat: <code>${h(d.alamat || "-")}</code>\n` +
+      `📱 WA: <b>${h(d.nomorWa || "-")}</b>\n` +
       `Pembayaran: <b>${h(d.pembayaran || "-")}</b>\n` +
       `Jiwa: <b>${d.jiwa || "-"}</b>\n\n` +
       `💰 Maal: <b>Rp ${rupiah(d.maal || 0)}</b>\n` +
@@ -443,6 +457,7 @@ async function handleMessage(msg) {
   const text =
     normalized === "nama" ? "/nama" :
     normalized === "alamat" ? "/alamat" :
+    normalized === "nomor wa" ? "/wa" :
     normalized === "pembayaran" ? "/pembayaran" :
     normalized === "jiwa" ? "/jiwa" :
     normalized === "tambahan" ? "/tambahan" :
@@ -452,7 +467,6 @@ async function handleMessage(msg) {
     normalized === "cancel" ? "/cancel" :
     textRaw;
 
-  // tanpa draft: /start & /input dulu
   if (text === "/start") {
     await tgSend(chatId, TXT.start(), { reply_markup: mainMenuKeyboard() });
     return;
@@ -465,14 +479,12 @@ async function handleMessage(msg) {
     return;
   }
 
-  // ambil draft
   let draft = await getDraft(userId);
   if (!draft) {
     await tgSend(chatId, TXT.noDraft(), { reply_markup: mainMenuKeyboard() });
     return;
   }
 
-  // ===== PRIORITAS COMMAND (jalan di state apa pun) =====
   if (text === "/edit") {
     await tgSend(chatId, "✏️ <b>Edit Draft</b>\nPilih bagian yang mau dibenerin:", { reply_markup: editMenuInline() });
     return;
@@ -505,6 +517,13 @@ async function handleMessage(msg) {
     draft.state = "IDLE";
     await setDraft(userId, draft);
     await tgSend(chatId, TXT.askBlok(), { reply_markup: blokKeyboard() });
+    return;
+  }
+
+  if (text === "/wa") {
+    draft.state = "WAIT_WA";
+    await setDraft(userId, draft);
+    await tgSend(chatId, TXT.askWa(), { reply_markup: mainMenuKeyboard() });
     return;
   }
 
@@ -549,7 +568,8 @@ async function handleMessage(msg) {
       txid: draft.txid,
       nama: draft.nama,
       alamat: draft.alamat,
-      pembayaran: draft.pembayaran, // Uang / Beras (Ltr) / Beras (Kg)
+      nomor_wa: draft.nomorWa, // <-- Data WA dikirim ke Apps Script
+      pembayaran: draft.pembayaran,
       jiwa: draft.jiwa,
       maal: draft.maal || 0,
       fidyah: draft.fidyah || 0,
@@ -572,16 +592,36 @@ async function handleMessage(msg) {
     }
 
     await deleteDraft(userId);
-    await tgSend(chatId, TXT.saved(out.row), { reply_markup: mainMenuKeyboard() });
+    
+    // Logika pengiriman file atau notifikasi standar
+    if (out.pdf_url) {
+      await tgSend(chatId, `✅ <b>Tersimpan di baris ${out.row}!</b>\nSedang mengirim kwitansi...`);
+      await tg("sendDocument", {
+        chat_id: chatId,
+        document: out.pdf_url,
+        caption: `🧾 Kwitansi Zakat (TxID: ${draft.txid})`
+      });
+      await tgSend(chatId, "Mau input lagi? klik /input", { reply_markup: mainMenuKeyboard() });
+    } else {
+      await tgSend(chatId, TXT.saved(out.row), { reply_markup: mainMenuKeyboard() });
+    }
     return;
   }
 
-  // ===== INPUT FREE-TEXT (hanya kalau bukan command) =====
+  // ===== INPUT FREE-TEXT =====
   if (draft.state === "WAIT_NAME") {
     draft.nama = textRaw;
     draft.state = "IDLE";
     await setDraft(userId, draft);
     await tgSend(chatId, TXT.nameSaved(draft.nama), { reply_markup: mainMenuKeyboard() });
+    return;
+  }
+
+  if (draft.state === "WAIT_WA") {
+    draft.nomorWa = textRaw;
+    draft.state = "IDLE";
+    await setDraft(userId, draft);
+    await tgSend(chatId, TXT.waSaved(draft.nomorWa), { reply_markup: mainMenuKeyboard() });
     return;
   }
 
@@ -626,7 +666,6 @@ async function handleCallback(cb) {
     return;
   }
 
-  // ===== OK / CANCEL / EDIT dari ringkasan =====
   if (data === "do:ok") {
     await tgAck(cb.id, "Sip ✅");
     await handleMessage({ chat: { id: chatId }, from: cb.from, text: "/ok" });
@@ -645,7 +684,6 @@ async function handleCallback(cb) {
     return;
   }
 
-  // ===== Edit menu navigation =====
   if (data === "edit:back") {
     await tgAck(cb.id, "Balik");
     await tgSend(chatId, TXT.summary(draft), { reply_markup: okCancelInline() });
@@ -679,6 +717,14 @@ async function handleCallback(cb) {
     return;
   }
 
+  if (data === "edit:wa") {
+    draft.state = "WAIT_WA";
+    await setDraft(userId, draft);
+    await tgAck(cb.id, "Nomor WA");
+    await tgSend(chatId, TXT.askWa(), { reply_markup: mainMenuKeyboard() });
+    return;
+  }
+
   if (data === "edit:pay") {
     draft.pembayaran = "";
     draft.state = "IDLE";
@@ -707,7 +753,7 @@ async function handleCallback(cb) {
   }
 
   if (data.startsWith("edit:clear:")) {
-    const code = data.split(":")[2]; // MAAL/FIDYAH/INFAK
+    const code = data.split(":")[2];
     if (code === "MAAL") draft.maal = 0;
     if (code === "FIDYAH") draft.fidyah = 0;
     if (code === "INFAK") draft.infak = 0;
@@ -718,7 +764,7 @@ async function handleCallback(cb) {
   }
 
   if (data.startsWith("edit:set:")) {
-    const code = data.split(":")[2]; // MAAL/FIDYAH/INFAK
+    const code = data.split(":")[2];
     draft.pendingAdd = code;
     draft.state = "WAIT_ADD_AMOUNT";
     await setDraft(userId, draft);
@@ -728,7 +774,6 @@ async function handleCallback(cb) {
     return;
   }
 
-  // ===== alamat flow =====
   if (data.startsWith("blk:")) {
     draft.blok = data.split(":")[1];
     await setDraft(userId, draft);
@@ -763,7 +808,6 @@ async function handleCallback(cb) {
     return;
   }
 
-  // ===== pembayaran =====
   if (data.startsWith("pay:")) {
     const code = data.split(":")[1];
     draft.pembayaran =
@@ -776,7 +820,6 @@ async function handleCallback(cb) {
     return;
   }
 
-  // ===== jiwa =====
   if (data.startsWith("jw:")) {
     draft.jiwa = parseInt(data.split(":")[1], 10);
     await setDraft(userId, draft);
@@ -785,7 +828,6 @@ async function handleCallback(cb) {
     return;
   }
 
-  // ===== tambahan =====
   if (data.startsWith("add:")) {
     draft.pendingAdd = data.split(":")[1];
     draft.state = "WAIT_ADD_AMOUNT";
