@@ -1,11 +1,10 @@
 // Assistant Zakat AL-Hikam (Telegram Bot) - Vercel + Upstash REST
 // Update:
+// - Hapus tombol setelah di klik (Anti-Spam)
+// - Pesan Loading saat memproses PDF
 // - Nomor rumah 1–60 (paging otomatis)
 // - Edit dari mana saja (tanpa ulang dari awal)
-// - Ringkasan punya tombol OK / Edit / Batal
-// - Edit tambahan bisa set/clear Maal/Fidyah/Infak
 // - HTML parse mode (teks rapi + santai)
-// - Tambahan input Nomor WA untuk integrasi Gateway
 
 // ===================== Upstash REST (Vercel KV env) =====================
 function kvBase() {
@@ -35,7 +34,7 @@ async function kvGet(key) {
   return res ?? null;
 }
 async function kvSetEx(key, ttlSec, value) {
-  await upstash("setex", key, ttlSec, value); // SETEX key ttl value
+  await upstash("setex", key, ttlSec, value); 
 }
 async function kvDel(key) {
   await upstash("del", key);
@@ -47,7 +46,6 @@ export default async function handler(req, res) {
   if (req.method === "GET") return res.status(200).send("ok");
   if (req.method !== "POST") return res.status(200).send("ok");
 
-  // verify secret token (anti orang iseng)
   const secret = req.headers["x-telegram-bot-api-secret-token"] || "";
   if (process.env.WEBHOOK_SECRET && secret !== process.env.WEBHOOK_SECRET) {
     return res.status(401).send("unauthorized");
@@ -85,7 +83,7 @@ async function getDraft(userId) {
   return raw ? JSON.parse(raw) : null;
 }
 async function setDraft(userId, draft) {
-  await kvSetEx(`draft:${userId}`, 1800, JSON.stringify(draft)); // 30 menit
+  await kvSetEx(`draft:${userId}`, 1800, JSON.stringify(draft));
 }
 async function deleteDraft(userId) {
   await kvDel(`draft:${userId}`);
@@ -97,7 +95,7 @@ function freshDraft(from) {
     txid: `TX-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     nama: "",
     alamat: "",
-    nomorWa: "", // <-- Tambahan Nomor WA
+    nomorWa: "", 
     pembayaran: "",
     jiwa: 0,
     maal: 0,
@@ -105,7 +103,7 @@ function freshDraft(from) {
     infak: 0,
     amil: uname,
     state: "IDLE",
-    pendingAdd: "",      // MAAL/FIDYAH/INFAK
+    pendingAdd: "",      
     blok: "",
     nomorBlok: 0,
     nomorRumah: 0,
@@ -295,7 +293,7 @@ function missingFields(d) {
   const miss = [];
   if (!d.nama) miss.push("Nama");
   if (!d.alamat) miss.push("Alamat");
-  if (!d.nomorWa) miss.push("Nomor WA"); // Diwajibkan agar tidak lupa
+  if (!d.nomorWa) miss.push("Nomor WA");
   if (!d.pembayaran) miss.push("Pembayaran");
   if (!d.jiwa) miss.push("Jiwa");
   return miss;
@@ -454,7 +452,6 @@ async function handleMessage(msg) {
   const textRaw = (msg.text || "").trim();
   const normalized = textRaw.toLowerCase();
 
-  // mapping reply keyboard → command
   const text =
     normalized === "nama" ? "/nama" :
     normalized === "alamat" ? "/alamat" :
@@ -559,6 +556,9 @@ async function handleMessage(msg) {
       return;
     }
 
+    // PESAN LOADING DITEMBAK DI SINI SEBELUM FETCH JALAN
+    await tgSend(chatId, "⏳ <i>Sedang menyimpan data ke Spreadsheet dan mencetak PDF Kwitansi...\nMohon tunggu sekitar 10-15 detik.</i>");
+
     const appsUrl = env("APPS_SCRIPT_URL");
     const appsKey = env("APPS_API_KEY");
     if (!appsUrl) throw new Error("APPS_SCRIPT_URL missing");
@@ -569,7 +569,7 @@ async function handleMessage(msg) {
       txid: draft.txid,
       nama: draft.nama,
       alamat: draft.alamat,
-      nomor_wa: draft.nomorWa, // <-- Data WA dikirim ke Apps Script
+      nomor_wa: draft.nomorWa, 
       pembayaran: draft.pembayaran,
       jiwa: draft.jiwa,
       maal: draft.maal || 0,
@@ -588,13 +588,12 @@ async function handleMessage(msg) {
     const out = await r.json().catch(() => null);
     if (!out || out.ok !== true) {
       console.log("AppsScript fail:", out);
-      await tgSend(chatId, "⚠️ <b>Gagal simpan ke sheet</b>\nCoba klik <code>OK</code> lagi ya.", { reply_markup: mainMenuKeyboard() });
+      await tgSend(chatId, "⚠️ <b>Gagal simpan ke sheet</b>\nCoba ketik <code>/ok</code> lagi ya.", { reply_markup: mainMenuKeyboard() });
       return;
     }
 
     await deleteDraft(userId);
     
-    // Logika pengiriman file atau notifikasi standar
     if (out.pdf_url) {
       await tgSend(chatId, `✅ <b>Tersimpan di baris ${out.row}!</b>\nSedang mengirim kwitansi...`);
       await tg("sendDocument", {
@@ -667,8 +666,17 @@ async function handleCallback(cb) {
     return;
   }
 
+  // LOGIKA PENGHAPUSAN TOMBOL ANTI SPAM DI SINI
   if (data === "do:ok") {
-    await tgAck(cb.id, "Sip ✅");
+    await tgAck(cb.id, "Sedang diproses... ⏳");
+    
+    // Hapus deretan tombol inline dari pesan agar tidak bisa diklik ulang
+    await tg("editMessageReplyMarkup", {
+      chat_id: chatId,
+      message_id: cb.message.message_id,
+      reply_markup: { inline_keyboard: [] }
+    });
+
     await handleMessage({ chat: { id: chatId }, from: cb.from, text: "/ok" });
     return;
   }
