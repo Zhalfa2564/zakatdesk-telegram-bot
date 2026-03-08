@@ -1,7 +1,7 @@
 // Assistant Zakat AL-Hikam (Telegram Bot) - Vercel + Upstash REST
 // Update:
+// - Hapus pesan Loading otomatis setelah proses selesai (Clean Chat)
 // - Hapus tombol setelah di klik (Anti-Spam)
-// - Pesan Loading saat memproses PDF
 // - Nomor rumah 1–60 (paging otomatis)
 // - Edit dari mana saja (tanpa ulang dari awal)
 // - HTML parse mode (teks rapi + santai)
@@ -556,8 +556,9 @@ async function handleMessage(msg) {
       return;
     }
 
-    // PESAN LOADING DITEMBAK DI SINI SEBELUM FETCH JALAN
-    await tgSend(chatId, "⏳ <i>Sedang menyimpan data ke Spreadsheet dan mencetak PDF Kwitansi...\nMohon tunggu sekitar 10-15 detik.</i>");
+    // 1. Tembak pesan Loading dan simpan message_id nya
+    const loadMsg = await tgSend(chatId, "⏳ <i>Sedang menyimpan data ke Spreadsheet dan mencetak PDF Kwitansi...\nMohon tunggu sekitar 10-15 detik.</i>");
+    const loadMsgId = loadMsg?.result?.message_id;
 
     const appsUrl = env("APPS_SCRIPT_URL");
     const appsKey = env("APPS_API_KEY");
@@ -578,6 +579,7 @@ async function handleMessage(msg) {
       amil: draft.amil
     };
 
+    // 2. Fetch ke Apps Script
     const r = await fetch(appsUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -586,6 +588,12 @@ async function handleMessage(msg) {
     });
 
     const out = await r.json().catch(() => null);
+
+    // 3. BEGITU FETCH SELESAI, LANGSUNG HAPUS PESAN LOADING
+    if (loadMsgId) {
+      await tg("deleteMessage", { chat_id: chatId, message_id: loadMsgId }).catch(e => console.log("Gagal hapus loading", e));
+    }
+
     if (!out || out.ok !== true) {
       console.log("AppsScript fail:", out);
       await tgSend(chatId, "⚠️ <b>Gagal simpan ke sheet</b>\nCoba ketik <code>/ok</code> lagi ya.", { reply_markup: mainMenuKeyboard() });
@@ -594,6 +602,7 @@ async function handleMessage(msg) {
 
     await deleteDraft(userId);
     
+    // 4. Kirim notifikasi sukses
     if (out.pdf_url) {
       await tgSend(chatId, `✅ <b>Tersimpan di baris ${out.row}!</b>\nSedang mengirim kwitansi...`);
       await tg("sendDocument", {
@@ -603,6 +612,7 @@ async function handleMessage(msg) {
       });
       await tgSend(chatId, "Mau input lagi? klik /input", { reply_markup: mainMenuKeyboard() });
     } else {
+      // Ini dieksekusi kalau Apps Script mendeteksi input ganda (Duplicate: True)
       await tgSend(chatId, TXT.saved(out.row), { reply_markup: mainMenuKeyboard() });
     }
     return;
@@ -666,11 +676,10 @@ async function handleCallback(cb) {
     return;
   }
 
-  // LOGIKA PENGHAPUSAN TOMBOL ANTI SPAM DI SINI
   if (data === "do:ok") {
     await tgAck(cb.id, "Sedang diproses... ⏳");
     
-    // Hapus deretan tombol inline dari pesan agar tidak bisa diklik ulang
+    // Hapus deretan tombol inline dari pesan agar tidak bisa diklik ulang (Anti-Spam)
     await tg("editMessageReplyMarkup", {
       chat_id: chatId,
       message_id: cb.message.message_id,
