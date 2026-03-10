@@ -1,11 +1,9 @@
 // Assistant Zakat AL-Hikam (Telegram Bot) - Vercel + Upstash REST
 // Update:
-// - DYNAMIC INPUT PLACEHOLDER: Teks abu-abu di kolom chat berubah otomatis sesuai konteks
-// - ANIMATED LOADING BAR: Efek loading progresif saat nyetak PDF
+// - VISUAL 100%: Loading bar dipaksa 100% dengan delay sebelum hilang
+// - FIX: Anti Webhook Retry Spam (Kunci state PROCESSING)
+// - DYNAMIC INPUT PLACEHOLDER: Teks abu-abu di kolom chat berubah otomatis
 // - AUTO-NEXT WIZARD: Flow mengalir tanpa perlu ketik command berulang
-// - Teks respons dikembalikan ke versi lama yang detail dan elegan
-// - Menu keyboard bawah diringkas jadi 2 tombol darurat
-// - Tambahan opsi Luar Perumahan (Ketik Manual) untuk Alamat
 
 // ===================== Upstash REST (Vercel KV env) =====================
 function kvBase() {
@@ -162,14 +160,13 @@ async function tgAck(cbId, text) {
 
 // ===================== Keyboards =====================
 
-// FUNGSI UTAMA PLACEHOLDER DINAMIS
 function mainMenuKeyboard(placeholder = "Pilih menu atau ketik perintah...") {
   return {
     keyboard: [
       ["🧾 Lihat Ringkasan", "❌ Batal Transaksi"]
     ],
     resize_keyboard: true,
-    input_field_placeholder: placeholder // Ini yang ngatur teks abu-abu di kolom chat
+    input_field_placeholder: placeholder 
   };
 }
 
@@ -478,6 +475,10 @@ async function handleMessage(msg) {
     return;
   }
 
+  if (draft.state === "PROCESSING") {
+    return; 
+  }
+
   if (text === "/lihat") {
     await tgSend(chatId, TXT.summary(draft), { reply_markup: okCancelInline() });
     return;
@@ -539,6 +540,9 @@ async function handleMessage(msg) {
       return;
     }
 
+    draft.state = "PROCESSING";
+    await setDraft(userId, draft);
+
     const loadMsg = await tgSend(chatId, "♻️ <i>Loading [░░░░░░░░░░] 0%</i>");
     const loadMsgId = loadMsg?.result?.message_id;
 
@@ -590,12 +594,17 @@ async function handleMessage(msg) {
 
     const out = await r.json().catch(() => null);
 
+    // STOP ANIMASI, PAKSA 100%, KASIH JEDA BIAR KEBACA, LALU HAPUS
     stopSignal.done = true;
     if (loadMsgId) {
+      await tgEdit(chatId, loadMsgId, "♻️ <i>Loading [██████████] 100%</i>").catch(()=>{});
+      await new Promise(res => setTimeout(res, 800)); // Delay 0.8 detik
       await tg("deleteMessage", { chat_id: chatId, message_id: loadMsgId }).catch(e => {});
     }
 
     if (!out || out.ok !== true) {
+      draft.state = "IDLE";
+      await setDraft(userId, draft);
       await tgSend(chatId, "⚠️ <b>Gagal simpan ke sheet</b>\nKlik <code>/lihat</code> lalu OK lagi.");
       return;
     }
@@ -679,6 +688,11 @@ async function handleCallback(cb) {
   let draft = await getDraft(userId);
   if (!draft) {
     await tgAck(cb.id, "Draft kosong. /input dulu.");
+    return;
+  }
+
+  if (draft.state === "PROCESSING") {
+    await tgAck(cb.id, "Sabar, lagi loading PDF... ⏳");
     return;
   }
 
@@ -807,7 +821,6 @@ async function handleCallback(cb) {
       draft.state = "WAIT_ALAMAT_MANUAL";
       await setDraft(userId, draft);
       await tgAck(cb.id, "Ketik Manual");
-      // Hapus pesan inline yang lama, ganti dengan instruksi plus placeholder dinamis
       await tg("deleteMessage", { chat_id: chatId, message_id: cb.message.message_id }).catch(()=>{});
       await tgSend(chatId, "📍 <b>Alamat Luar Perumahan</b>\nSilakan ketik alamat lengkap muzaki.\nContoh: <i>Jl. Raya Ciseeng No. 12, RT 01/02</i>", { reply_markup: mainMenuKeyboard("Contoh: Jl. Raya Ciseeng No. 12") });
       return;
@@ -825,7 +838,7 @@ async function handleCallback(cb) {
     draft.rumahPage = 1;
     await setDraft(userId, draft);
     await tgAck(cb.id, `No Blok ${draft.nomorBlok}`);
-    await tgEdit(chatId, cb.message.message_id, TXT.askRumah(draft.blok, draft.nomorBlok), { reply_markup: rumahKeyboard(draft.rumahPage) });
+    await tgEdit(chatId, cb.message.message_id, TXT.askRumah(draft.blok, draft.nomorBlok), { reply,  markup: rumahKeyboard(draft.rumahPage) });
     return;
   }
 
