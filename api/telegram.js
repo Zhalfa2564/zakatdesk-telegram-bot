@@ -1,6 +1,7 @@
 // Assistant Zakat AL-Hikam (Telegram Bot) - Vercel + Upstash REST
 // Update:
 // - AUTO-NEXT WIZARD: Flow mengalir tanpa perlu ketik command berulang
+// - Teks respons dikembalikan ke versi lama yang detail dan elegan
 // - Menu keyboard bawah diringkas jadi 2 tombol darurat
 // - Tombol "Lewati" di menu Tambahan
 // - Tambahan opsi Luar Perumahan (Ketik Manual) untuk Alamat
@@ -161,7 +162,6 @@ async function tgAck(cbId, text) {
 }
 
 // ===================== Keyboards =====================
-// Keyboard utama diringkas biar nggak menuhin layar
 function mainMenuKeyboard() {
   return {
     keyboard: [
@@ -317,48 +317,84 @@ function shortTx(txid) {
 const TXT = {
   start: () =>
     `👋 <b>Assistant Zakat AL-Hikam</b>\n` +
-    `Mulai transaksi: <code>/input</code>`,
+    `Aku bantu input zakat biar kamu nggak jadi admin Excel dadakan 😄\n\n` +
+    `Mulai transaksi: <code>/input</code>\n` +
+    `Cek draft: <code>/lihat</code>`,
 
   draftCreated: (d) =>
-    `🧾 <b>Draft Baru Dibuka!</b>\n` +
+    `🧾 <b>Draft dibuka!</b>\n` +
     `TxID: <code>${h(shortTx(d.txid))}</code>\n\n` +
-    `✍️ <b>Silakan ketik NAMA muzaki:</b>\n` +
-    `(Contoh: <i>Ahmad</i>)`,
+    `✍️ <b>Nama muzaki</b>\n` +
+    `Ketik nama aja ya.\n` +
+    `Contoh: <i>Ahmad</i>`,
 
   askName: () =>
-    `✍️ <b>Ketik NAMA muzaki:</b>\n` +
-    `(Contoh: <i>Ahmad</i>)`,
+    `✍️ <b>Nama muzaki</b>\n` +
+    `Ketik nama aja ya.\n` +
+    `Contoh: <i>Ahmad</i>`,
+
+  nameSaved: (nama) =>
+    `✅ <b>Nama tersimpan</b>\n` +
+    `Nama: <b>${h(nama)}</b>`,
 
   askBlok: () =>
-    `📍 <b>Pilih Blok Alamat:</b>`,
+    `📍 <b>Pilih alamat</b>\n` +
+    `Pilih <b>Blok</b> dulu (A–I):`,
 
   askNomorBlok: (blok) =>
-    `📍 Blok: <b>${h(blok)}</b>\n` +
-    `Pilih <b>Nomor Blok</b> (1–24):`,
+    `📍 <b>Alamat</b>\n` +
+    `Blok: <b>${h(blok)}</b>\n` +
+    `Pilih <b>nomor blok</b> (1–24):`,
 
   askRumah: (blok, nomorBlok) =>
-    `📍 Blok: <b>${h(blok)}</b> | No Blok: <b>${h(nomorBlok)}</b>\n` +
-    `Pilih <b>Nomor Rumah</b>:`,
+    `📍 <b>Alamat</b>\n` +
+    `Blok: <b>${h(blok)}</b>\n` +
+    `No Blok: <b>${h(nomorBlok)}</b>\n` +
+    `Pilih <b>nomor rumah</b> (1–${TOTAL_RUMAH}):`,
+
+  alamatSaved: (alamat) =>
+    `📍 <b>Alamat tersimpan</b>\n` +
+    `Alamat: <code>${h(alamat)}</code>`,
 
   askWa: () =>
-    `📱 <b>Ketik Nomor WA Muzaki:</b>\n` +
-    `Ketik angka 0 atau 62 di depan.\n` +
-    `Ketik "<b>-</b>" kalau dia nggak punya WA.`,
+    `📱 <b>Nomor WA Muzaki</b>\n` +
+    `Ketik nomor WA diawali angka 0 atau 62.\n` +
+    `Ketik tanda strip "<b>-</b>" kalau dia nggak punya WA.\n` +
+    `Contoh: <i>08123456789</i>`,
+
+  waSaved: (wa) =>
+    `✅ <b>WA tersimpan</b>\n` +
+    `Nomor: <b>${h(wa)}</b>`,
 
   askPay: () =>
-    `💳 <b>Pilih metode pembayaran zakat fitrah:</b>`,
+    `💳 <b>Pembayaran zakat fitrah</b>\n` +
+    `Pilih metode pembayaran:`,
+
+  paySaved: (p) =>
+    `✅ <b>Pembayaran dipilih</b>\n` +
+    `Metode: <b>${h(p)}</b>`,
 
   askJiwa: () =>
-    `👨‍👩‍👧‍👦 <b>Pilih jumlah jiwa:</b>`,
+    `👨‍👩‍👧‍👦 <b>Jumlah jiwa</b>\n` +
+    `Pilih jumlah jiwa:`,
+
+  jiwaSaved: (n) =>
+    `✅ <b>Jiwa tersimpan</b>\n` +
+    `Jiwa: <b>${n}</b>`,
 
   askTambah: () =>
-    `➕ <b>Ada tambahan Zakat Maal / Fidyah / Infak?</b>\n` +
-    `Pilih di bawah ini atau klik Lewati:`,
+    `➕ <b>Tambahan (opsional)</b>\n` +
+    `Pilih jenis tambahan (atau klik Lewati):`,
 
   askNominalTambah: (label) =>
     `➕ <b>${h(label)}</b>\n` +
     `Ketik nominal (angka aja).\n` +
-    `Contoh: <code>25000</code>`,
+    `Contoh: <code>25000</code>\n\n` +
+    `Kalau salah klik: <code>/edit</code>`,
+
+  tambahSaved: (label, amount) =>
+    `✅ <b>${h(label)} tersimpan</b>\n` +
+    `Nominal: <b>Rp ${rupiah(amount)}</b>`,
 
   summary: (d) => {
     const miss = missingFields(d);
@@ -392,13 +428,15 @@ const TXT = {
 
   canceled: () =>
     `🗑️ <b>Draft dibatalkan</b>\n` +
-    `Mulai lagi: <code>/input</code>`,
+    `Kalau mau mulai lagi: <code>/input</code>`,
 
   noDraft: () =>
-    `😄 Draft belum ada. Mulai dulu: <code>/input</code>`,
+    `😄 Draft kamu belum ada.\nMulai dulu ya: <code>/input</code>`,
 
   unknown: () =>
-    `🤖 Maksudnya gimana tuh?\nMulai: <code>/input</code>`
+    `🤖 Aku agak bingung itu maksudnya apa 😄\n` +
+    `Mulai: <code>/input</code>\n` +
+    `Cek draft: <code>/lihat</code>`
 };
 
 // ===================== Core flow =====================
@@ -407,7 +445,7 @@ async function handleMessage(msg) {
   const userId = msg.from.id;
 
   if (!isAllowed(userId)) {
-    await tgSend(chatId, "⛔ <b>Akses ditolak</b>");
+    await tgSend(chatId, "⛔ <b>Akses ditolak</b>\nAkun ini belum terdaftar sebagai panitia.");
     return;
   }
 
@@ -439,7 +477,7 @@ async function handleMessage(msg) {
     return;
   }
 
-  // Handle Command Internal (Bisa dipanggil manual atau via Auto-Next)
+  // Handle Command Internal
   if (text === "/lihat") {
     await tgSend(chatId, TXT.summary(draft), { reply_markup: okCancelInline() });
     return;
@@ -501,7 +539,7 @@ async function handleMessage(msg) {
       return;
     }
 
-    const loadMsg = await tgSend(chatId, "⏳ <i>Sedang menyimpan data ke Spreadsheet dan mencetak PDF...</i>");
+    const loadMsg = await tgSend(chatId, "⏳ <i>Sedang menyimpan data ke Spreadsheet dan mencetak PDF Kwitansi...\nMohon tunggu sekitar 10-15 detik.</i>");
     const loadMsgId = loadMsg?.result?.message_id;
 
     const appsUrl = env("APPS_SCRIPT_URL");
@@ -548,7 +586,7 @@ async function handleMessage(msg) {
         document: out.pdf_url,
         caption: `🧾 Kwitansi Zakat (TxID: ${draft.txid})`
       });
-      await tgSend(chatId, "Mau input data baru? Klik /input", { reply_markup: mainMenuKeyboard() });
+      await tgSend(chatId, "Mau input lagi? <code>/input</code>", { reply_markup: mainMenuKeyboard() });
     } else {
       await tgSend(chatId, TXT.saved(out.row), { reply_markup: mainMenuKeyboard() });
     }
@@ -560,8 +598,7 @@ async function handleMessage(msg) {
     draft.nama = textRaw;
     draft.state = "IDLE";
     await setDraft(userId, draft);
-    await tgSend(chatId, `✅ <b>Nama:</b> ${h(draft.nama)}`);
-    // AUTO NEXT: Langsung panggil Alamat
+    await tgSend(chatId, TXT.nameSaved(draft.nama));
     return handleMessage({ chat: { id: chatId }, from: msg.from, text: "/alamat" });
   }
 
@@ -569,8 +606,7 @@ async function handleMessage(msg) {
     draft.alamat = textRaw;
     draft.state = "IDLE";
     await setDraft(userId, draft);
-    await tgSend(chatId, `✅ <b>Alamat:</b> ${h(draft.alamat)}`);
-    // AUTO NEXT: Langsung panggil WA
+    await tgSend(chatId, TXT.alamatSaved(draft.alamat));
     return handleMessage({ chat: { id: chatId }, from: msg.from, text: "/wa" });
   }
 
@@ -578,8 +614,7 @@ async function handleMessage(msg) {
     draft.nomorWa = textRaw;
     draft.state = "IDLE";
     await setDraft(userId, draft);
-    await tgSend(chatId, `✅ <b>WA:</b> ${h(draft.nomorWa)}`);
-    // AUTO NEXT: Langsung panggil Pembayaran
+    await tgSend(chatId, TXT.waSaved(draft.nomorWa));
     return handleMessage({ chat: { id: chatId }, from: msg.from, text: "/pembayaran" });
   }
 
@@ -601,8 +636,7 @@ async function handleMessage(msg) {
     draft.state = "IDLE";
     await setDraft(userId, draft);
 
-    await tgSend(chatId, `✅ <b>${h(label)}:</b> Rp ${rupiah(amount)}`);
-    // Tawarkan lagi menu tambahan jika mau nambah yang lain
+    await tgSend(chatId, TXT.tambahSaved(label, amount));
     return handleMessage({ chat: { id: chatId }, from: msg.from, text: "/tambahan" });
   }
 
@@ -627,7 +661,6 @@ async function handleCallback(cb) {
 
   if (data === "do:lihat") {
     await tgAck(cb.id, "Ringkasan");
-    // Hapus pesan menu tambahan agar chat bersih
     await tg("deleteMessage", { chat_id: chatId, message_id: cb.message.message_id }).catch(()=>{});
     return handleMessage({ chat: { id: chatId }, from: cb.from, text: "/lihat" });
   }
@@ -655,7 +688,6 @@ async function handleCallback(cb) {
 
   if (data === "edit:back") {
     await tgAck(cb.id, "Balik");
-    // Hapus menu edit, panggil lihat
     await tg("deleteMessage", { chat_id: chatId, message_id: cb.message.message_id }).catch(()=>{});
     return handleMessage({ chat: { id: chatId }, from: cb.from, text: "/lihat" });
   }
@@ -752,7 +784,6 @@ async function handleCallback(cb) {
       draft.state = "WAIT_ALAMAT_MANUAL";
       await setDraft(userId, draft);
       await tgAck(cb.id, "Ketik Manual");
-      // Hapus keyboard inline dengan mengganti teks pesan
       await tgEdit(chatId, cb.message.message_id, "📍 <b>Alamat Luar Perumahan</b>\nSilakan ketik alamat lengkap muzaki.\nContoh: <i>Jl. Raya Ciseeng No. 12, RT 01/02</i>");
       return;
     }
@@ -787,9 +818,7 @@ async function handleCallback(cb) {
     await setDraft(userId, draft);
     await tgAck(cb.id, `Rumah ${draft.nomorRumah}`);
     
-    // Ganti pesan keyboard jadi teks biasa biar chat bersih
-    await tgEdit(chatId, cb.message.message_id, `✅ <b>Alamat:</b> ${h(draft.alamat)}`);
-    // AUTO NEXT: Langsung panggil WA
+    await tgEdit(chatId, cb.message.message_id, TXT.alamatSaved(draft.alamat));
     return handleMessage({ chat: { id: chatId }, from: cb.from, text: "/wa" });
   }
 
@@ -802,8 +831,7 @@ async function handleCallback(cb) {
     await setDraft(userId, draft);
     await tgAck(cb.id, "Oke ✅");
     
-    await tgEdit(chatId, cb.message.message_id, `✅ <b>Pembayaran:</b> ${h(draft.pembayaran)}`);
-    // AUTO NEXT: Langsung panggil Jiwa
+    await tgEdit(chatId, cb.message.message_id, TXT.paySaved(draft.pembayaran));
     return handleMessage({ chat: { id: chatId }, from: cb.from, text: "/jiwa" });
   }
 
@@ -812,8 +840,7 @@ async function handleCallback(cb) {
     await setDraft(userId, draft);
     await tgAck(cb.id, `Jiwa ${draft.jiwa}`);
     
-    await tgEdit(chatId, cb.message.message_id, `✅ <b>Jiwa:</b> ${draft.jiwa}`);
-    // AUTO NEXT: Langsung panggil Tambahan
+    await tgEdit(chatId, cb.message.message_id, TXT.jiwaSaved(draft.jiwa));
     return handleMessage({ chat: { id: chatId }, from: cb.from, text: "/tambahan" });
   }
 
