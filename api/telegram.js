@@ -1,5 +1,6 @@
 // Assistant Zakat AL-Hikam (Telegram Bot) - Vercel + Upstash REST
 // Update:
+// - Tambahan opsi Luar Perumahan (Ketik Manual) untuk Alamat
 // - Hapus pesan Loading otomatis setelah proses selesai (Clean Chat)
 // - Hapus tombol setelah di klik (Anti-Spam)
 // - Nomor rumah 1–60 (paging otomatis)
@@ -175,7 +176,8 @@ function mainMenuKeyboard() {
 function blokKeyboard() {
   const row1 = ["A","B","C","D","E"].map(x => ({ text: x, callback_data: `blk:${x}` }));
   const row2 = ["F","G","H","I"].map(x => ({ text: x, callback_data: `blk:${x}` }));
-  return { inline_keyboard: [row1, row2] };
+  const row3 = [{ text: "🌍 Luar Perumahan (Ketik Manual)", callback_data: "blk:MANUAL" }];
+  return { inline_keyboard: [row1, row2, row3] };
 }
 
 function nomorBlokKeyboard() {
@@ -556,7 +558,6 @@ async function handleMessage(msg) {
       return;
     }
 
-    // 1. Tembak pesan Loading dan simpan message_id nya
     const loadMsg = await tgSend(chatId, "⏳ <i>Sedang menyimpan data ke Spreadsheet dan mencetak PDF Kwitansi...\nMohon tunggu sekitar 10-15 detik.</i>");
     const loadMsgId = loadMsg?.result?.message_id;
 
@@ -579,7 +580,6 @@ async function handleMessage(msg) {
       amil: draft.amil
     };
 
-    // 2. Fetch ke Apps Script
     const r = await fetch(appsUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -589,7 +589,6 @@ async function handleMessage(msg) {
 
     const out = await r.json().catch(() => null);
 
-    // 3. BEGITU FETCH SELESAI, LANGSUNG HAPUS PESAN LOADING
     if (loadMsgId) {
       await tg("deleteMessage", { chat_id: chatId, message_id: loadMsgId }).catch(e => console.log("Gagal hapus loading", e));
     }
@@ -602,7 +601,6 @@ async function handleMessage(msg) {
 
     await deleteDraft(userId);
     
-    // 4. Kirim notifikasi sukses
     if (out.pdf_url) {
       await tgSend(chatId, `✅ <b>Tersimpan di baris ${out.row}!</b>\nSedang mengirim kwitansi...`);
       await tg("sendDocument", {
@@ -612,7 +610,6 @@ async function handleMessage(msg) {
       });
       await tgSend(chatId, "Mau input lagi? klik /input", { reply_markup: mainMenuKeyboard() });
     } else {
-      // Ini dieksekusi kalau Apps Script mendeteksi input ganda (Duplicate: True)
       await tgSend(chatId, TXT.saved(out.row), { reply_markup: mainMenuKeyboard() });
     }
     return;
@@ -624,6 +621,15 @@ async function handleMessage(msg) {
     draft.state = "IDLE";
     await setDraft(userId, draft);
     await tgSend(chatId, TXT.nameSaved(draft.nama), { reply_markup: mainMenuKeyboard() });
+    return;
+  }
+
+  // TANGKAPAN UNTUK ALAMAT LUAR PERUMAHAN
+  if (draft.state === "WAIT_ALAMAT_MANUAL") {
+    draft.alamat = textRaw;
+    draft.state = "IDLE";
+    await setDraft(userId, draft);
+    await tgSend(chatId, TXT.alamatSaved(draft.alamat), { reply_markup: mainMenuKeyboard() });
     return;
   }
 
@@ -678,14 +684,11 @@ async function handleCallback(cb) {
 
   if (data === "do:ok") {
     await tgAck(cb.id, "Sedang diproses... ⏳");
-    
-    // Hapus deretan tombol inline dari pesan agar tidak bisa diklik ulang (Anti-Spam)
     await tg("editMessageReplyMarkup", {
       chat_id: chatId,
       message_id: cb.message.message_id,
       reply_markup: { inline_keyboard: [] }
     });
-
     await handleMessage({ chat: { id: chatId }, from: cb.from, text: "/ok" });
     return;
   }
@@ -793,7 +796,18 @@ async function handleCallback(cb) {
   }
 
   if (data.startsWith("blk:")) {
-    draft.blok = data.split(":")[1];
+    const blokVal = data.split(":")[1];
+    
+    // TANGKAPAN KLIK TOMBOL LUAR PERUMAHAN
+    if (blokVal === "MANUAL") {
+      draft.state = "WAIT_ALAMAT_MANUAL";
+      await setDraft(userId, draft);
+      await tgAck(cb.id, "Ketik Manual");
+      await tgSend(chatId, "📍 <b>Alamat Luar Perumahan</b>\nSilakan ketik alamat lengkap muzaki.\nContoh: <i>Jl. Raya Ciseeng No. 12, RT 01/02</i>", { reply_markup: mainMenuKeyboard() });
+      return;
+    }
+
+    draft.blok = blokVal;
     await setDraft(userId, draft);
     await tgAck(cb.id, `Blok ${draft.blok}`);
     await tgSend(chatId, TXT.askNomorBlok(draft.blok), { reply_markup: nomorBlokKeyboard() });
