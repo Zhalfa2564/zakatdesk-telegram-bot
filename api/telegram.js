@@ -1,5 +1,6 @@
 // Assistant Zakat AL-Hikam (Telegram Bot) - Vercel + Upstash REST
 // Update:
+// - FIX TYPO: Memperbaiki error "reply is not defined" pada menu nomor rumah
 // - VISUAL 100%: Loading bar dipaksa 100% dengan delay sebelum hilang
 // - FIX: Anti Webhook Retry Spam (Kunci state PROCESSING)
 // - DYNAMIC INPUT PLACEHOLDER: Teks abu-abu di kolom chat berubah otomatis
@@ -594,11 +595,10 @@ async function handleMessage(msg) {
 
     const out = await r.json().catch(() => null);
 
-    // STOP ANIMASI, PAKSA 100%, KASIH JEDA BIAR KEBACA, LALU HAPUS
     stopSignal.done = true;
     if (loadMsgId) {
       await tgEdit(chatId, loadMsgId, "♻️ <i>Loading [██████████] 100%</i>").catch(()=>{});
-      await new Promise(res => setTimeout(res, 800)); // Delay 0.8 detik
+      await new Promise(res => setTimeout(res, 800)); 
       await tg("deleteMessage", { chat_id: chatId, message_id: loadMsgId }).catch(e => {});
     }
 
@@ -838,7 +838,8 @@ async function handleCallback(cb) {
     draft.rumahPage = 1;
     await setDraft(userId, draft);
     await tgAck(cb.id, `No Blok ${draft.nomorBlok}`);
-    await tgEdit(chatId, cb.message.message_id, TXT.askRumah(draft.blok, draft.nomorBlok), { reply,  markup: rumahKeyboard(draft.rumahPage) });
+    // FIX TYPO: Ubah "reply, markup" menjadi "reply_markup"
+    await tgEdit(chatId, cb.message.message_id, TXT.askRumah(draft.blok, draft.nomorBlok), { reply_markup: rumahKeyboard(draft.rumahPage) });
     return;
   }
 
