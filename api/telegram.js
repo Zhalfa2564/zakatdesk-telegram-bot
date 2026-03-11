@@ -1,11 +1,11 @@
 // Assistant Zakat AL-Hikam (Telegram Bot) - Vercel + Upstash REST
 // Update:
-// - FIX TIMEOUT 10s: Sistem Handoff AbortController (Lempar ke Background)
-// - FIX TYPO: Memperbaiki error "reply is not defined" pada menu nomor rumah
-// - VISUAL 100%: Loading bar dipaksa 100% dengan delay sebelum hilang
 // - FIX: Anti Webhook Retry Spam (Kunci state PROCESSING)
-// - DYNAMIC INPUT PLACEHOLDER: Teks abu-abu di kolom chat berubah otomatis
+// - DYNAMIC INPUT PLACEHOLDER: Teks abu-abu di kolom chat berubah otomatis sesuai konteks
+// - ANIMATED LOADING BAR: Efek loading progresif saat nyetak PDF
 // - AUTO-NEXT WIZARD: Flow mengalir tanpa perlu ketik command berulang
+// - Teks respons dikembalikan ke versi lama yang detail dan elegan
+// - Menu keyboard bawah diringkas jadi 2 tombol darurat
 
 // ===================== Upstash REST (Vercel KV env) =====================
 function kvBase() {
@@ -42,7 +42,7 @@ async function kvDel(key) {
 }
 
 // ===================== Telegram handler =====================
-export const maxDuration = 10; // Disesuaikan dengan limit asli Vercel Hobby
+export const maxDuration = 60;
 export default async function handler(req, res) {
   if (req.method === "GET") return res.status(200).send("ok");
   if (req.method !== "POST") return res.status(200).send("ok");
@@ -161,6 +161,7 @@ async function tgAck(cbId, text) {
 }
 
 // ===================== Keyboards =====================
+
 function mainMenuKeyboard(placeholder = "Pilih menu atau ketik perintah...") {
   return {
     keyboard: [
@@ -313,6 +314,7 @@ function shortTx(txid) {
   return s.length > 14 ? s.slice(0, 14) + "…" : s;
 }
 
+// ===================== Text pack =====================
 const TXT = {
   start: () =>
     `👋 <b>Assistant Zakat AL-Hikam</b>\n` +
@@ -475,8 +477,10 @@ async function handleMessage(msg) {
     return;
   }
 
+  // KUNCI ANTI-SPAM (WEBHOOK RETRY)
+  // Kalau Vercel lagi ngerjain proses nyetak PDF, semua tembakan ulang dari Telegram bakal ditangkis di sini
   if (draft.state === "PROCESSING") {
-    return; 
+    return; // Cuekin request-nya
   }
 
   if (text === "/lihat") {
@@ -540,14 +544,17 @@ async function handleMessage(msg) {
       return;
     }
 
+    // 1. KUNCI STATE DRAFT SEKARANG JUGA
     draft.state = "PROCESSING";
     await setDraft(userId, draft);
 
+    // 2. Tembak pesan Loading awal
     const loadMsg = await tgSend(chatId, "♻️ <i>Loading [░░░░░░░░░░] 0%</i>");
     const loadMsgId = loadMsg?.result?.message_id;
 
     let stopSignal = { done: false };
 
+    // 3. Fungsi Animasi Loading Bar di Background
     const animateLoading = async () => {
       const frames = [
         "♻️ <i>Loading [██░░░░░░░░] 20%</i>",
@@ -568,6 +575,7 @@ async function handleMessage(msg) {
 
     animateLoading();
 
+    // 4. Kirim data ke Apps Script
     const appsUrl = env("APPS_SCRIPT_URL");
     const appsKey = env("APPS_API_KEY");
 
@@ -585,74 +593,42 @@ async function handleMessage(msg) {
       amil: draft.amil
     };
 
-    // KUNCI JAWABAN TIMEOUT VERCEL: Menggunakan AbortController untuk memutus request tepat di 8.5 Detik
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8500);
+    const r = await fetch(appsUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      redirect: "follow"
+    });
 
-    try {
-      const r = await fetch(appsUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        redirect: "follow",
-        signal: controller.signal // Signal pemutus
+    const out = await r.json().catch(() => null);
+
+    // 5. Berhentikan animasi dan hapus pesannya
+    stopSignal.done = true;
+    if (loadMsgId) {
+      await tg("deleteMessage", { chat_id: chatId, message_id: loadMsgId }).catch(e => {});
+    }
+
+    if (!out || out.ok !== true) {
+      // Buka kunci lagi kalau ternyata Apps Script-nya gagal/error
+      draft.state = "IDLE";
+      await setDraft(userId, draft);
+      await tgSend(chatId, "⚠️ <b>Gagal simpan ke sheet</b>\nKlik <code>/lihat</code> lalu OK lagi.");
+      return;
+    }
+
+    // Sukses! Buang draft-nya
+    await deleteDraft(userId);
+    
+    if (out.pdf_url) {
+      await tgSend(chatId, `✅ <b>Tersimpan di baris ${out.row}!</b>\nSedang mengirim kwitansi...`);
+      await tg("sendDocument", {
+        chat_id: chatId,
+        document: out.pdf_url,
+        caption: `🧾 Kwitansi Zakat (TxID: ${draft.txid})`
       });
-      clearTimeout(timeoutId);
-
-      const out = await r.json().catch(() => null);
-
-      // Jika berhasil dalam waktu < 8.5 detik
-      stopSignal.done = true;
-      if (loadMsgId) {
-        await tgEdit(chatId, loadMsgId, "♻️ <i>Loading [██████████] 100%</i>").catch(()=>{});
-        await new Promise(res => setTimeout(res, 600)); 
-        await tg("deleteMessage", { chat_id: chatId, message_id: loadMsgId }).catch(e => {});
-      }
-
-      if (!out || out.ok !== true) {
-        draft.state = "IDLE";
-        await setDraft(userId, draft);
-        await tgSend(chatId, "⚠️ <b>Gagal simpan ke sheet</b>\nKlik <code>/lihat</code> lalu OK lagi.");
-        return;
-      }
-
-      await deleteDraft(userId);
-      
-      // Kirim dokumen kwitansi ke chat jika selesai cepat
-      if (out.pdf_url) {
-        await tgSend(chatId, `✅ <b>Tersimpan di baris ${out.row}!</b>\nSedang mengirim kwitansi...`);
-        await tg("sendDocument", {
-          chat_id: chatId,
-          document: out.pdf_url,
-          caption: `🧾 Kwitansi Zakat (TxID: ${draft.txid})`
-        });
-        await tgSend(chatId, "Mau input lagi? <code>/input</code>", { reply_markup: mainMenuKeyboard("Ketik /input untuk mulai...") });
-      } else {
-        await tgSend(chatId, TXT.saved(out.row), { reply_markup: mainMenuKeyboard("Ketik /input untuk mulai...") });
-      }
-
-    } catch (err) {
-      stopSignal.done = true;
-      
-      // Jika Vercel memotong fetch karena butuh waktu > 8.5 detik
-      if (err.name === 'AbortError' || err.type === 'aborted') {
-        if (loadMsgId) {
-          await tgEdit(chatId, loadMsgId, "♻️ <i>Loading [██████████] 100%</i>").catch(()=>{});
-          await new Promise(res => setTimeout(res, 600)); 
-          await tg("deleteMessage", { chat_id: chatId, message_id: loadMsgId }).catch(e => {});
-        }
-
-        await deleteDraft(userId);
-        
-        // Kasih notifikasi elegan bahwa proses dilanjut di server Google
-        await tgSend(chatId, "✅ <b>Data Berhasil Dikirim ke Server!</b>\n\n<i>(Pembuatan PDF Kwitansi membutuhkan waktu. Kwitansi akan <b>otomatis terkirim ke WhatsApp</b> muzaki sesaat lagi).</i>\n\nSilakan lanjut input data berikutnya.", { reply_markup: mainMenuKeyboard("Ketik /input untuk mulai...") });
-      } else {
-        // Error koneksi beneran
-        draft.state = "IDLE";
-        await setDraft(userId, draft);
-        if (loadMsgId) await tg("deleteMessage", { chat_id: chatId, message_id: loadMsgId }).catch(()=>{});
-        await tgSend(chatId, "⚠️ <b>Terjadi gangguan jaringan</b>\nKlik <code>/lihat</code> lalu OK lagi.");
-      }
+      await tgSend(chatId, "Mau input lagi? <code>/input</code>", { reply_markup: mainMenuKeyboard("Ketik /input untuk mulai...") });
+    } else {
+      await tgSend(chatId, TXT.saved(out.row), { reply_markup: mainMenuKeyboard("Ketik /input untuk mulai...") });
     }
     return;
   }
@@ -723,8 +699,9 @@ async function handleCallback(cb) {
     return;
   }
 
+  // JAGA-JAGA DI CALLBACK JUGA
   if (draft.state === "PROCESSING") {
-    await tgAck(cb.id, "Sabar, lagi proses data... ⏳");
+    await tgAck(cb.id, "Sabar, lagi loading PDF... ⏳");
     return;
   }
 
