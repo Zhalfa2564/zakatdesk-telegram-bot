@@ -1,4 +1,4 @@
-// Assistant Zakat AL-Hikam (Telegram Bot) - Vercel + Upstash REST
+// Assistant Zakat AL-IKHLAS (Telegram Bot) - Vercel + Upstash REST
 // Update:
 // - FIX: Anti Webhook Retry Spam (Kunci state PROCESSING)
 // - DYNAMIC INPUT PLACEHOLDER: Teks abu-abu di kolom chat berubah otomatis sesuai konteks
@@ -6,6 +6,7 @@
 // - AUTO-NEXT WIZARD: Flow mengalir tanpa perlu ketik command berulang
 // - Teks respons dikembalikan ke versi lama yang detail dan elegan
 // - Menu keyboard bawah diringkas jadi 2 tombol darurat
+// - UPGRADE: Batas Total Rumah dinaikkan jadi 70
 
 // ===================== Upstash REST (Vercel KV env) =====================
 function kvBase() {
@@ -190,7 +191,8 @@ function nomorBlokKeyboard() {
   return { inline_keyboard: rows };
 }
 
-const TOTAL_RUMAH = 60;
+// UBAH TOTAL RUMAH DI SINI
+const TOTAL_RUMAH = 70;
 const RUMAH_PER_PAGE = 10;
 const RUMAH_PAGES = Math.ceil(TOTAL_RUMAH / RUMAH_PER_PAGE);
 
@@ -317,7 +319,7 @@ function shortTx(txid) {
 // ===================== Text pack =====================
 const TXT = {
   start: () =>
-    `👋 <b>Assistant Zakat AL-Hikam</b>\n` +
+    `👋 <b>Assistant Zakat AL-IKHLAS</b>\n` +
     `Aku bantu input zakat biar kamu nggak jadi admin Excel dadakan 😄\n\n` +
     `Mulai transaksi: <code>/input</code>\n` +
     `Cek draft: <code>/lihat</code>`,
